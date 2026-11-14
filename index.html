@@ -1,1 +1,218 @@
 
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Recorder</title>
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;min-height:100vh;padding:30px 16px;
+  display:flex;justify-content:center;align-items:center;
+  background:radial-gradient(circle at top,#29204d,#090914 65%);
+  color:white;font-family:Arial,sans-serif;
+}
+.app{
+  width:100%;max-width:520px;padding:30px;
+  background:#171525;border:1px solid #393052;
+  border-radius:25px;box-shadow:0 20px 70px #0008;
+  text-align:center;
+}
+h1{margin:0 0 8px;font-size:30px}
+.sub{color:#aaa;margin-bottom:30px}
+.mic{
+  width:120px;height:120px;border:0;border-radius:50%;
+  background:linear-gradient(145deg,#a855f7,#6d28d9);
+  color:white;font-size:45px;cursor:pointer;
+  box-shadow:0 0 35px #9333ea66;
+  transition:.2s;
+}
+.mic:hover{transform:scale(1.06)}
+.mic.recording{background:#e04465;animation:pulse 1.2s infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 18px #e0446522}}
+#timer{font-size:32px;margin:20px 0 8px;font-variant-numeric:tabular-nums}
+#status{color:#aaa;font-size:14px;min-height:20px}
+.buttons{display:flex;gap:10px;margin-top:25px}
+button.secondary{
+  flex:1;padding:13px;border:1px solid #51436e;
+  background:#29233b;color:white;border-radius:12px;
+  cursor:pointer;font-size:15px;
+}
+button:disabled{opacity:.4;cursor:not-allowed}
+audio{width:100%;margin-top:22px}
+.download{display:inline-block;color:#c084fc;margin-top:12px}
+details{
+  margin-top:25px;text-align:left;background:#211d32;
+  border-radius:13px;padding:16px;
+}
+summary{cursor:pointer;font-weight:bold}
+#transcript{color:#ddd;line-height:1.6;margin-top:14px;white-space:pre-wrap}
+.note{color:#888;font-size:12px;margin-top:25px;line-height:1.5}
+</style>
+</head>
+<body>
+<main class="app">
+  <h1>🎙️ Voice Recorder</h1>
+  <div class="sub">Твой личный онлайн-диктофон</div>
+
+  <button class="mic" id="mic" aria-label="Начать запись">🎤</button>
+  <div id="timer">00:00</div>
+  <div id="status">Нажми на микрофон, чтобы начать запись</div>
+
+  <div class="buttons">
+    <button class="secondary" id="stop" disabled>⏹ Остановить</button>
+    <button class="secondary" id="play" disabled>▶ Прослушать</button>
+  </div>
+
+  <audio id="audio" controls hidden></audio>
+  <a id="download" class="download" hidden download="my-recording.webm">⬇ Скачать запись</a>
+
+  <details>
+    <summary>📝 Показать расшифровку речи</summary>
+    <div id="transcript">Здесь появится текст распознанной речи во время записи.</div>
+  </details>
+
+  <div class="note">
+    Записи обрабатываются в браузере. Не закрывай страницу до скачивания аудио.
+    Распознавание речи поддерживается не всеми браузерами.
+  </div>
+</main>
+
+<script>
+const mic = document.getElementById("mic");
+const stopBtn = document.getElementById("stop");
+const playBtn = document.getElementById("play");
+const audio = document.getElementById("audio");
+const timer = document.getElementById("timer");
+const status = document.getElementById("status");
+const transcript = document.getElementById("transcript");
+const download = document.getElementById("download");
+
+let recorder = null;
+let stream = null;
+let chunks = [];
+let audioURL = null;
+let seconds = 0;
+let clock = null;
+let recognition = null;
+let finalText = "";
+
+const SpeechRecognition =
+  window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function showTime() {
+  const m = String(Math.floor(seconds / 60)).padStart(2, "0");
+  const s = String(seconds % 60).padStart(2, "0");
+  timer.textContent = `${m}:${s}`;
+}
+
+function startRecognition() {
+  if (!SpeechRecognition) {
+    transcript.textContent =
+      "Твой браузер не поддерживает распознавание речи. Запись аудио всё равно работает!";
+    return;
+  }
+
+  recognition = new SpeechRecognition();
+  recognition.lang = "ru-RU";
+  recognition.continuous = true;
+  recognition.interimResults = true;
+
+  recognition.onresult = (event) => {
+    let interim = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const text = event.results[i][0].transcript;
+      if (event.results[i].isFinal) finalText += text + " ";
+      else interim += text;
+    }
+    transcript.textContent = (finalText + interim).trim() || "Слушаю...";
+  };
+
+  recognition.onerror = () => {};
+  recognition.onend = () => {
+    if (recorder && recorder.state === "recording") {
+      try { recognition.start(); } catch(e) {}
+    }
+  };
+
+  try { recognition.start(); } catch(e) {}
+}
+
+mic.addEventListener("click", async () => {
+  if (recorder && recorder.state === "recording") return;
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    chunks = [];
+    seconds = 0;
+    finalText = "";
+    showTime();
+
+    if (audioURL) URL.revokeObjectURL(audioURL);
+    audio.hidden = true;
+    download.hidden = true;
+    playBtn.disabled = true;
+    transcript.textContent = "Слушаю...";
+
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, {type: recorder.mimeType || "audio/webm"});
+      audioURL = URL.createObjectURL(blob);
+      audio.src = audioURL;
+      audio.hidden = false;
+      download.href = audioURL;
+      download.hidden = false;
+      playBtn.disabled = false;
+      status.textContent = "Запись готова! Можешь прослушать её.";
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    };
+
+    recorder.start();
+    startRecognition();
+
+    mic.classList.add("recording");
+    mic.textContent = "⏺";
+    stopBtn.disabled = false;
+    status.textContent = "Идёт запись...";
+    clock = setInterval(() => {
+      seconds++;
+      showTime();
+    }, 1000);
+
+  } catch(error) {
+    status.textContent = "Не удалось включить микрофон. Разреши доступ в браузере.";
+  }
+});
+
+stopBtn.addEventListener("click", () => {
+  if (recorder && recorder.state === "recording") recorder.stop();
+  clearInterval(clock);
+  if (recognition) {
+    recognition.onend = null;
+    try { recognition.stop(); } catch(e) {}
+    recognition = null;
+  }
+  mic.classList.remove("recording");
+  mic.textContent = "🎤";
+  stopBtn.disabled = true;
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  if (!finalText.trim() && SpeechRecognition) {
+    transcript.textContent = "Речь не удалось распознать. Аудиозапись сохранена.";
+  }
+});
+
+playBtn.addEventListener("click", () => {
+  if (audioURL) {
+    audio.hidden = false;
+    audio.play();
+  }
+});
+</script>
+</body>
+</html>
