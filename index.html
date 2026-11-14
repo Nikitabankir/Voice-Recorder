@@ -25,14 +25,13 @@ h1{margin:0 0 8px;font-size:30px}
   width:120px;height:120px;border:0;border-radius:50%;
   background:linear-gradient(145deg,#a855f7,#6d28d9);
   color:white;font-size:45px;cursor:pointer;
-  box-shadow:0 0 35px #9333ea66;
-  transition:.2s;
+  box-shadow:0 0 35px #9333ea66;transition:.2s;
 }
 .mic:hover{transform:scale(1.06)}
 .mic.recording{background:#e04465;animation:pulse 1.2s infinite}
 @keyframes pulse{50%{box-shadow:0 0 0 18px #e0446522}}
 #timer{font-size:32px;margin:20px 0 8px;font-variant-numeric:tabular-nums}
-#status{color:#aaa;font-size:14px;min-height:20px}
+#status{color:#aaa;font-size:14px;min-height:36px}
 .buttons{display:flex;gap:10px;margin-top:25px}
 button.secondary{
   flex:1;padding:13px;border:1px solid #51436e;
@@ -40,146 +39,122 @@ button.secondary{
   cursor:pointer;font-size:15px;
 }
 button:disabled{opacity:.4;cursor:not-allowed}
-audio{width:100%;margin-top:22px}
-.download{display:inline-block;color:#c084fc;margin-top:12px}
-details{
-  margin-top:25px;text-align:left;background:#211d32;
-  border-radius:13px;padding:16px;
-}
-summary{cursor:pointer;font-weight:bold}
-#transcript{color:#ddd;line-height:1.6;margin-top:14px;white-space:pre-wrap}
+.download{display:inline-block;color:#c084fc;margin-top:22px}
 .note{color:#888;font-size:12px;margin-top:25px;line-height:1.5}
 </style>
 </head>
 <body>
 <main class="app">
   <h1>🎙️ Voice Recorder</h1>
-  <div class="sub">Твой личный онлайн-диктофон</div>
+  <div class="sub">Запиши голос и послушай наоборот!</div>
 
-  <button class="mic" id="mic" aria-label="Начать запись">🎤</button>
+  <button class="mic" id="mic">🎤</button>
   <div id="timer">00:00</div>
-  <div id="status">Нажми на микрофон, чтобы начать запись</div>
+  <div id="status">Нажми на микрофон и говори</div>
 
   <div class="buttons">
     <button class="secondary" id="stop" disabled>⏹ Остановить</button>
-    <button class="secondary" id="play" disabled>▶ Прослушать</button>
+    <button class="secondary" id="reverse" disabled>⏪ Послушать наоборот</button>
   </div>
 
-  <audio id="audio" controls hidden></audio>
-  <a id="download" class="download" hidden download="my-recording.webm">⬇ Скачать запись</a>
-
-  <details>
-    <summary>📝 Показать расшифровку речи</summary>
-    <div id="transcript">Здесь появится текст распознанной речи во время записи.</div>
-  </details>
+  <a id="download" class="download" hidden download="my-recording.webm">⬇ Скачать оригинальную запись</a>
 
   <div class="note">
-    Записи обрабатываются в браузере. Не закрывай страницу до скачивания аудио.
-    Распознавание речи поддерживается не всеми браузерами.
+    Говори в микрофон, останови запись и нажми «Послушать наоборот».
+    Расшифровки в текст нет.
   </div>
 </main>
 
 <script>
 const mic = document.getElementById("mic");
 const stopBtn = document.getElementById("stop");
-const playBtn = document.getElementById("play");
-const audio = document.getElementById("audio");
+const reverseBtn = document.getElementById("reverse");
 const timer = document.getElementById("timer");
 const status = document.getElementById("status");
-const transcript = document.getElementById("transcript");
 const download = document.getElementById("download");
 
 let recorder = null;
 let stream = null;
 let chunks = [];
+let audioBlob = null;
 let audioURL = null;
 let seconds = 0;
 let clock = null;
-let recognition = null;
-let finalText = "";
-
-const SpeechRecognition =
-  window.SpeechRecognition || window.webkitSpeechRecognition;
+let audioContext = null;
+let playbackSource = null;
+let reversedBuffer = null;
 
 function showTime() {
   const m = String(Math.floor(seconds / 60)).padStart(2, "0");
   const s = String(seconds % 60).padStart(2, "0");
-  timer.textContent = `${m}:${s}`;
+  timer.textContent = m + ":" + s;
 }
 
-function startRecognition() {
-  if (!SpeechRecognition) {
-    transcript.textContent =
-      "Твой браузер не поддерживает распознавание речи. Запись аудио всё равно работает!";
-    return;
+function stopPlayback() {
+  if (playbackSource) {
+    try { playbackSource.stop(); } catch(e) {}
+    playbackSource = null;
   }
-
-  recognition = new SpeechRecognition();
-  recognition.lang = "ru-RU";
-  recognition.continuous = true;
-  recognition.interimResults = true;
-
-  recognition.onresult = (event) => {
-    let interim = "";
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const text = event.results[i][0].transcript;
-      if (event.results[i].isFinal) finalText += text + " ";
-      else interim += text;
-    }
-    transcript.textContent = (finalText + interim).trim() || "Слушаю...";
-  };
-
-  recognition.onerror = () => {};
-  recognition.onend = () => {
-    if (recorder && recorder.state === "recording") {
-      try { recognition.start(); } catch(e) {}
-    }
-  };
-
-  try { recognition.start(); } catch(e) {}
 }
 
 mic.addEventListener("click", async () => {
   if (recorder && recorder.state === "recording") return;
 
   try {
+    stopPlayback();
+
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      status.textContent = "Открой сайт в современном Chrome или Edge.";
+      return;
+    }
+
     stream = await navigator.mediaDevices.getUserMedia({audio:true});
     chunks = [];
+    audioBlob = null;
+    reversedBuffer = null;
     seconds = 0;
-    finalText = "";
     showTime();
 
     if (audioURL) URL.revokeObjectURL(audioURL);
-    audio.hidden = true;
+    audioURL = null;
     download.hidden = true;
-    playBtn.disabled = true;
-    transcript.textContent = "Слушаю...";
+    reverseBtn.disabled = true;
 
-    recorder = new MediaRecorder(stream);
+    let options = {};
+    if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+      options.mimeType = "audio/webm;codecs=opus";
+    }
+
+    recorder = new MediaRecorder(stream, options);
+
     recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunks.push(event.data);
+      if (event.data && event.data.size > 0) chunks.push(event.data);
     };
 
     recorder.onstop = () => {
-      const blob = new Blob(chunks, {type: recorder.mimeType || "audio/webm"});
-      audioURL = URL.createObjectURL(blob);
-      audio.src = audioURL;
-      audio.hidden = false;
+      audioBlob = new Blob(chunks, {
+        type: recorder.mimeType || "audio/webm"
+      });
+
+      audioURL = URL.createObjectURL(audioBlob);
       download.href = audioURL;
       download.hidden = false;
-      playBtn.disabled = false;
-      status.textContent = "Запись готова! Можешь прослушать её.";
-      stream.getTracks().forEach(track => track.stop());
-      stream = null;
+      reverseBtn.disabled = false;
+      status.textContent = "Запись готова! Теперь слушай её наоборот.";
+
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
     };
 
     recorder.start();
-    startRecognition();
 
     mic.classList.add("recording");
     mic.textContent = "⏺";
     stopBtn.disabled = false;
-    status.textContent = "Идёт запись...";
+    status.textContent = "Идёт запись — говори в микрофон...";
+
     clock = setInterval(() => {
       seconds++;
       showTime();
@@ -187,30 +162,86 @@ mic.addEventListener("click", async () => {
 
   } catch(error) {
     status.textContent = "Не удалось включить микрофон. Разреши доступ в браузере.";
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    }
   }
 });
 
 stopBtn.addEventListener("click", () => {
-  if (recorder && recorder.state === "recording") recorder.stop();
-  clearInterval(clock);
-  if (recognition) {
-    recognition.onend = null;
-    try { recognition.stop(); } catch(e) {}
-    recognition = null;
+  if (recorder && recorder.state === "recording") {
+    recorder.stop();
   }
+
+  clearInterval(clock);
   mic.classList.remove("recording");
   mic.textContent = "🎤";
   stopBtn.disabled = true;
-  if (stream) stream.getTracks().forEach(track => track.stop());
-  if (!finalText.trim() && SpeechRecognition) {
-    transcript.textContent = "Речь не удалось распознать. Аудиозапись сохранена.";
-  }
+  status.textContent = "Обрабатываю запись...";
 });
 
-playBtn.addEventListener("click", () => {
-  if (audioURL) {
-    audio.hidden = false;
-    audio.play();
+reverseBtn.addEventListener("click", async () => {
+  if (!audioBlob) return;
+
+  try {
+    stopPlayback();
+    status.textContent = "Готовлю обратное воспроизведение...";
+
+    const AudioContextClass =
+      window.AudioContext || window.webkitAudioContext;
+
+    if (!AudioContextClass) {
+      status.textContent = "Браузер не поддерживает обработку аудио.";
+      return;
+    }
+
+    if (!audioContext) {
+      audioContext = new AudioContextClass();
+    }
+
+    await audioContext.resume();
+
+    if (!reversedBuffer) {
+      const data = await audioBlob.arrayBuffer();
+      const original = await audioContext.decodeAudioData(data);
+
+      const reversed = audioContext.createBuffer(
+        original.numberOfChannels,
+        original.length,
+        original.sampleRate
+      );
+
+      for (let channel = 0; channel < original.numberOfChannels; channel++) {
+        const input = original.getChannelData(channel);
+        const output = reversed.getChannelData(channel);
+
+        for (let i = 0; i < input.length; i++) {
+          output[i] = input[input.length - 1 - i];
+        }
+      }
+
+      reversedBuffer = reversed;
+    }
+
+    const source = audioContext.createBufferSource();
+    source.buffer = reversedBuffer;
+    source.connect(audioContext.destination);
+
+    playbackSource = source;
+
+    source.onended = () => {
+      if (playbackSource === source) {
+        playbackSource = null;
+        status.textContent = "Обратное воспроизведение завершено!";
+      }
+    };
+
+    source.start();
+    status.textContent = "⏪ Твой голос звучит задом наперёд!";
+
+  } catch(error) {
+    status.textContent = "Не удалось обработать аудио. Попробуй записать ещё раз.";
   }
 });
 </script>
